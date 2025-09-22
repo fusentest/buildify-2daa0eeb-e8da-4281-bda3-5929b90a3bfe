@@ -1,5 +1,5 @@
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Loader2, MapPin, RefreshCw, ThermometerSun, Wind, Droplets, Sun, Cloud, CloudRain, CloudSnow, CloudLightning, CloudFog } from 'lucide-react';
@@ -7,6 +7,17 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '../components/ui/card';
 import { Skeleton } from '../components/ui/skeleton';
 import { ThemeToggle } from '../components/theme-toggle';
+import LocationSearch from '../components/LocationSearch';
+import UnitToggle from '../components/UnitToggle';
+
+interface Location {
+  id: string;
+  name: string;
+  region: string;
+  country: string;
+  lat: number;
+  lon: number;
+}
 
 interface Coordinates {
   latitude: number;
@@ -51,6 +62,8 @@ interface WeatherData {
 const WeatherPage = () => {
   const [coordinates, setCoordinates] = useState<Coordinates | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
+  const [selectedLocation, setSelectedLocation] = useState<Location | null>(null);
+  const [isCelsius, setIsCelsius] = useState(true);
 
   // Get current location
   useEffect(() => {
@@ -77,13 +90,16 @@ const WeatherPage = () => {
 
   // Fetch weather data
   const { data: weatherData, isLoading, isError, error, refetch } = useQuery<WeatherData>({
-    queryKey: ['weather', coordinates?.latitude, coordinates?.longitude],
+    queryKey: ['weather', selectedLocation?.lat || coordinates?.latitude, selectedLocation?.lon || coordinates?.longitude],
     queryFn: async () => {
-      if (!coordinates) throw new Error('Location coordinates not available');
+      const lat = selectedLocation?.lat || coordinates?.latitude;
+      const lon = selectedLocation?.lon || coordinates?.longitude;
+      
+      if (!lat || !lon) throw new Error('Location coordinates not available');
       
       // Using WeatherAPI.com as an example - you would need to replace with your actual API key
       const response = await fetch(
-        `https://api.weatherapi.com/v1/forecast.json?key=YOUR_API_KEY&q=${coordinates.latitude},${coordinates.longitude}&days=3&aqi=no&alerts=no`
+        `https://api.weatherapi.com/v1/forecast.json?key=YOUR_API_KEY&q=${lat},${lon}&days=3&aqi=no&alerts=no`
       );
       
       if (!response.ok) {
@@ -92,7 +108,7 @@ const WeatherPage = () => {
       
       return response.json();
     },
-    enabled: !!coordinates,
+    enabled: !!(selectedLocation || coordinates),
     retry: 1,
   });
 
@@ -116,6 +132,22 @@ const WeatherPage = () => {
     }
   };
 
+  const handleLocationSelect = useCallback((location: Location) => {
+    setSelectedLocation(location);
+    setCoordinates({
+      latitude: location.lat,
+      longitude: location.lon,
+    });
+  }, []);
+
+  const handleUnitChange = useCallback((celsius: boolean) => {
+    setIsCelsius(celsius);
+  }, []);
+
+  const formatTemperature = (tempC: number, tempF: number) => {
+    return isCelsius ? `${tempC}°C` : `${tempF}°F`;
+  };
+
   const getWeatherIcon = (code: number) => {
     // Simple mapping of weather condition codes to icons
     if (code >= 1000 && code < 1003) return <Sun className="h-12 w-12 text-yellow-500" />;
@@ -132,6 +164,18 @@ const WeatherPage = () => {
         <h1 className="text-3xl font-bold">Weather GPS</h1>
         <ThemeToggle />
       </header>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+        <div className="lg:col-span-2">
+          <LocationSearch 
+            onLocationSelect={handleLocationSelect}
+            currentLocation={selectedLocation}
+          />
+        </div>
+        <div>
+          <UnitToggle onUnitChange={handleUnitChange} />
+        </div>
+      </div>
 
       {locationError && (
         <Card className="mb-6 border-red-300 bg-red-50 dark:bg-red-950">
@@ -150,9 +194,11 @@ const WeatherPage = () => {
             <div>
               <CardTitle>Current Location</CardTitle>
               <CardDescription>
-                {coordinates 
-                  ? `Lat: ${coordinates.latitude.toFixed(4)}, Long: ${coordinates.longitude.toFixed(4)}` 
-                  : 'Detecting your location...'}
+                {selectedLocation 
+                  ? `${selectedLocation.name}, ${selectedLocation.region}` 
+                  : coordinates 
+                    ? `Lat: ${coordinates.latitude.toFixed(4)}, Long: ${coordinates.longitude.toFixed(4)}` 
+                    : 'Detecting your location...'}
               </CardDescription>
             </div>
             <Button variant="outline" size="icon" onClick={refreshLocation} disabled={isLoading}>
@@ -210,7 +256,7 @@ const WeatherPage = () => {
                 <div className="flex items-center gap-4 mb-4 md:mb-0">
                   {getWeatherIcon(weatherData.current.condition.code)}
                   <div>
-                    <h2 className="text-4xl font-bold">{weatherData.current.temp_c}°C</h2>
+                    <h2 className="text-4xl font-bold">{formatTemperature(weatherData.current.temp_c, weatherData.current.temp_f)}</h2>
                     <p className="text-muted-foreground">{weatherData.current.condition.text}</p>
                   </div>
                 </div>
@@ -219,7 +265,7 @@ const WeatherPage = () => {
                     <ThermometerSun className="h-5 w-5 text-orange-500" />
                     <div>
                       <p className="text-sm text-muted-foreground">Feels Like</p>
-                      <p className="font-medium">{weatherData.current.feelslike_c}°C</p>
+                      <p className="font-medium">{formatTemperature(weatherData.current.feelslike_c, weatherData.current.feelslike_f)}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -263,8 +309,8 @@ const WeatherPage = () => {
                           {getWeatherIcon(day.day.condition.code)}
                           <p className="mt-2">{day.day.condition.text}</p>
                           <div className="flex gap-2 mt-2">
-                            <span className="font-bold">{day.day.maxtemp_c}°</span>
-                            <span className="text-muted-foreground">{day.day.mintemp_c}°</span>
+                            <span className="font-bold">{isCelsius ? day.day.maxtemp_c : Math.round((day.day.maxtemp_c * 9/5) + 32)}°</span>
+                            <span className="text-muted-foreground">{isCelsius ? day.day.mintemp_c : Math.round((day.day.mintemp_c * 9/5) + 32)}°</span>
                           </div>
                         </div>
                       </CardContent>
