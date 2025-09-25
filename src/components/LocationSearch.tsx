@@ -1,10 +1,17 @@
 import { useState, useCallback } from 'react';
-import { Search, MapPin, Star, StarOff } from 'lucide-react';
+import { Search, MapPin, Star, StarOff, AlertCircle, Loader2 } from 'lucide-react';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
 import { Input } from './ui/input';
 import { Button } from './ui/button';
 import { Card, CardContent } from './ui/card';
 import { Badge } from './ui/badge';
+import { Alert, AlertDescription } from './ui/alert';
+import { Form, FormControl, FormField, FormItem, FormMessage } from './ui/form';
 import { toast } from 'sonner';
+import { useLocationSearch } from '../hooks/useLocationSearch';
+import { handleManualLocationEntry, type GeocodingResult } from '../services/geocodingService';
 
 interface Location {
   id: string;
@@ -20,60 +27,83 @@ interface LocationSearchProps {
   currentLocation?: Location | null;
 }
 
+// Form validation schema
+const manualLocationSchema = z.object({
+  location: z
+    .string()
+    .min(2, 'Location must be at least 2 characters')
+    .max(100, 'Location must be less than 100 characters')
+    .regex(/^[a-zA-Z0-9\s,.-]+$/, 'Location contains invalid characters')
+});
+
+type ManualLocationForm = z.infer<typeof manualLocationSchema>;
+
 const LocationSearch = ({ onLocationSelect, currentLocation }: LocationSearchProps) => {
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<Location[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
   const [savedLocations, setSavedLocations] = useState<Location[]>(() => {
     const saved = localStorage.getItem('weather-saved-locations');
     return saved ? JSON.parse(saved) : [];
   });
+  const [isManualSearching, setIsManualSearching] = useState(false);
 
-  const searchLocations = useCallback(async (query: string) => {
-    if (query.length < 3) {
-      setSearchResults([]);
-      return;
+  // Use the location search hook
+  const {
+    searchQuery,
+    setSearchQuery,
+    searchResults,
+    isSearching,
+    searchError,
+    manualSearch,
+    clearResults
+  } = useLocationSearch({
+    debounceMs: 300,
+    minSearchLength: 3,
+    maxResults: 8
+  });
+
+  // Form for manual location entry
+  const form = useForm<ManualLocationForm>({
+    resolver: zodResolver(manualLocationSchema),
+    defaultValues: {
+      location: ''
     }
+  });
 
-    setIsSearching(true);
-    try {
-      // Using WeatherAPI.com search endpoint
-      const response = await fetch(
-        `https://api.weatherapi.com/v1/search.json?key=YOUR_API_KEY&q=${encodeURIComponent(query)}`
-      );
-      
-      if (response.ok) {
-        const results = await response.json();
-        const locations: Location[] = results.map((result: any) => ({
-          id: `${result.lat}-${result.lon}`,
-          name: result.name,
-          region: result.region,
-          country: result.country,
-          lat: result.lat,
-          lon: result.lon,
-        }));
-        setSearchResults(locations);
-      } else {
-        setSearchResults([]);
-      }
-    } catch (error) {
-      console.error('Search error:', error);
-      setSearchResults([]);
-    } finally {
-      setIsSearching(false);
-    }
-  }, []);
+  // Convert GeocodingResult to Location
+  const convertToLocation = (result: GeocodingResult): Location => ({
+    id: result.id,
+    name: result.name,
+    region: result.region,
+    country: result.country,
+    lat: result.lat,
+    lon: result.lon
+  });
 
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    searchLocations(searchQuery);
-  };
-
+  // Handle location selection from search results
   const handleLocationSelect = (location: Location) => {
     onLocationSelect(location);
     setSearchQuery('');
-    setSearchResults([]);
+    clearResults();
+    form.reset();
     toast.success(`Weather updated for ${location.name}`);
+  };
+
+  // Handle manual location entry form submission
+  const onManualSubmit = async (data: ManualLocationForm) => {
+    setIsManualSearching(true);
+    
+    await handleManualLocationEntry(
+      data.location,
+      (result) => {
+        const location = convertToLocation(result);
+        handleLocationSelect(location);
+      },
+      (error) => {
+        console.error('Manual location entry error:', error);
+        // Error is already shown via toast in handleManualLocationEntry
+      }
+    );
+    
+    setIsManualSearching(false);
   };
 
   const toggleSavedLocation = (location: Location) => {
@@ -98,31 +128,79 @@ const LocationSearch = ({ onLocationSelect, currentLocation }: LocationSearchPro
 
   return (
     <div className="space-y-4">
-      {/* Search Form */}
+      {/* Auto-complete Search */}
       <Card>
         <CardContent className="pt-6">
-          <form onSubmit={handleSearch} className="flex gap-2">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                type="text"
-                placeholder="Search for a city or location..."
-                value={searchQuery}
-                onChange={(e) => {
-                  setSearchQuery(e.target.value);
-                  searchLocations(e.target.value);
-                }}
-                className="pl-10"
-              />
+          <div className="space-y-4">
+            <div>
+              <h3 className="text-sm font-medium mb-2">Search Locations</h3>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  type="text"
+                  placeholder="Start typing a city name..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-10"
+                />
+                {isSearching && (
+                  <Loader2 className="absolute right-3 top-1/2 transform -translate-y-1/2 h-4 w-4 animate-spin text-muted-foreground" />
+                )}
+              </div>
             </div>
-            <Button type="submit" disabled={isSearching || searchQuery.length < 3}>
-              {isSearching ? 'Searching...' : 'Search'}
-            </Button>
-          </form>
+
+            {/* Manual Location Entry Form */}
+            <div>
+              <h3 className="text-sm font-medium mb-2">Or Enter Location Manually</h3>
+              <Form {...form}>
+                <form onSubmit={form.handleSubmit(onManualSubmit)} className="flex gap-2">
+                  <FormField
+                    control={form.control}
+                    name="location"
+                    render={({ field }) => (
+                      <FormItem className="flex-1">
+                        <FormControl>
+                          <Input
+                            placeholder="e.g., New York, London, Tokyo"
+                            {...field}
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <Button 
+                    type="submit" 
+                    disabled={isManualSearching}
+                    className="shrink-0"
+                  >
+                    {isManualSearching ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Finding...
+                      </>
+                    ) : (
+                      'Find Location'
+                    )}
+                  </Button>
+                </form>
+              </Form>
+            </div>
+          </div>
         </CardContent>
       </Card>
 
-      {/* Search Results */}
+      {/* Search Error */}
+      {searchError && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>
+            {searchError.message}
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {/* Auto-complete Search Results */}
       {searchResults.length > 0 && (
         <Card>
           <CardContent className="pt-6">
